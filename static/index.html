@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PDF → Word Converter</title>
+  <meta name="description" content="Convert PDF files to editable Word documents instantly. Free, fast, and beautiful." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- Floating animated background orbs -->
+  <div class="bg-orbs" aria-hidden="true">
+    <span class="orb orb-1"></span>
+    <span class="orb orb-2"></span>
+    <span class="orb orb-3"></span>
+  </div>
+
+  <main id="app">
+    <!-- ── Header ──────────────────────────────────────────────── -->
+    <header class="header">
+      <div class="logo">
+        <svg class="logo-icon" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect width="40" height="40" rx="10" fill="url(#logo-grad)"/>
+          <path d="M12 10h10l6 6v14a2 2 0 01-2 2H12a2 2 0 01-2 2V12a2 2 0 012-2z" stroke="#fff" stroke-width="1.8" fill="none"/>
+          <path d="M22 10v6h6" stroke="#fff" stroke-width="1.8" fill="none" stroke-linecap="round"/>
+          <path d="M14 22h10M14 26h7" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/>
+          <defs><linearGradient id="logo-grad" x1="0" y1="0" x2="40" y2="40"><stop stop-color="#6366f1"/><stop offset="1" stop-color="#a855f7"/></linearGradient></defs>
+        </svg>
+        <span class="logo-text">DocShift</span>
+      </div>
+      <p class="tagline">PDF → Word in seconds</p>
+    </header>
+
+    <!-- ── Drop Zone ───────────────────────────────────────────── -->
+    <section id="drop-zone" class="drop-zone" tabindex="0" role="button" aria-label="Upload a PDF file">
+      <div class="drop-zone__content" id="drop-zone-content">
+        <!-- Upload icon -->
+        <svg class="drop-zone__icon" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="32" cy="32" r="30" stroke="url(#dz-grad)" stroke-width="2" stroke-dasharray="6 4" opacity="0.5"/>
+          <path d="M32 42V22m0 0l-8 8m8-8l8 8" stroke="url(#dz-grad)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+          <defs><linearGradient id="dz-grad" x1="0" y1="0" x2="64" y2="64"><stop stop-color="#818cf8"/><stop offset="1" stop-color="#c084fc"/></linearGradient></defs>
+        </svg>
+        <p class="drop-zone__label">Drag &amp; drop your PDF here</p>
+        <p class="drop-zone__sublabel">or <span class="drop-zone__browse">browse files</span></p>
+        <p class="drop-zone__hint">Max 50 MB &bull; .pdf only</p>
+      </div>
+
+      <!-- File selected state (hidden by default) -->
+      <div class="drop-zone__selected hidden" id="file-selected">
+        <svg class="drop-zone__file-icon" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect x="8" y="4" width="24" height="32" rx="3" stroke="#818cf8" stroke-width="2" fill="rgba(99,102,241,0.08)"/>
+          <path d="M32 4v8h8" stroke="#818cf8" stroke-width="2" fill="none" stroke-linecap="round"/>
+          <path d="M32 4l8 8" stroke="#818cf8" stroke-width="2" fill="none"/>
+          <rect x="8" y="12" width="32" height="32" rx="3" stroke="#a855f7" stroke-width="2" fill="rgba(168,85,247,0.08)"/>
+          <path d="M16 24h16M16 30h10" stroke="#a855f7" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+        <p class="file-name" id="file-name">document.pdf</p>
+        <p class="file-size" id="file-size">1.2 MB</p>
+        <button class="btn-remove" id="btn-remove" type="button" aria-label="Remove file">&times;</button>
+      </div>
+
+      <input type="file" id="file-input" accept=".pdf,application/pdf" hidden />
+    </section>
+
+    <!-- ── Convert Button ──────────────────────────────────────── -->
+    <button id="btn-convert" class="btn-convert" disabled>
+      <span class="btn-convert__label">Convert to Word</span>
+      <svg class="btn-convert__arrow" viewBox="0 0 20 20" fill="currentColor" width="18" height="18">
+        <path fill-rule="evenodd" d="M10.293 3.293a1 1 0 011.414 0l6 6a1 1 0 010 1.414l-6 6a1 1 0 01-1.414-1.414L14.586 11H3a1 1 0 110-2h11.586l-4.293-4.293a1 1 0 010-1.414z"/>
+      </svg>
+    </button>
+
+    <!-- ── Progress ────────────────────────────────────────────── -->
+    <section id="progress-section" class="progress-section hidden">
+      <div class="progress-bar-track">
+        <div class="progress-bar-fill" id="progress-bar"></div>
+      </div>
+      <p class="progress-text" id="progress-text">Converting…</p>
+    </section>
+
+    <!-- ── Success ─────────────────────────────────────────────── -->
+    <section id="success-section" class="success-section hidden">
+      <svg class="success-icon" viewBox="0 0 56 56" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="28" cy="28" r="26" stroke="url(#suc-grad)" stroke-width="2.5"/>
+        <path d="M18 28l7 7 13-13" stroke="url(#suc-grad)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+        <defs><linearGradient id="suc-grad" x1="0" y1="0" x2="56" y2="56"><stop stop-color="#34d399"/><stop offset="1" stop-color="#22d3ee"/></linearGradient></defs>
+      </svg>
+      <h2 class="success-title">Conversion Complete!</h2>
+      <p class="success-sub">Your Word document is ready.</p>
+      <button id="btn-new" class="btn-new" type="button">Convert Another</button>
+    </section>
+
+    <!-- ── Error ───────────────────────────────────────────────── -->
+    <section id="error-section" class="error-section hidden">
+      <p class="error-text" id="error-text">Something went wrong.</p>
+      <button id="btn-retry" class="btn-retry" type="button">Try Again</button>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p>Your files are processed locally and automatically deleted.</p>
+  </footer>
+
+  <script src="main.js"></script>
+</body>
+</html>
