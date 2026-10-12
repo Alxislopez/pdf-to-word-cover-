@@ -1,3 +1,4 @@
 flask==3.1.*
 pdf2docx
 werkzeug
+gunicorn
