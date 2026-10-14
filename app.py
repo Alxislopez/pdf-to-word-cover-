@@ -1,26 +1,36 @@
 """
 PDF to Word Converter — Flask Backend
 Handles file upload, conversion via pdf2docx, and download.
+
+Memory strategy: conversion is run in a separate subprocess so that
+PyMuPDF / OpenCV memory is fully released back to the OS when the
+child process exits — keeping the parent Gunicorn worker lean.
 """
 
 import os
+import sys
 import uuid
 import time
+import subprocess
 import threading
 from pathlib import Path
 
 from flask import Flask, request, jsonify, send_file, send_from_directory
-from pdf2docx import Converter
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__, static_folder="static", static_url_path="")
 
 # ── Configuration ──────────────────────────────────────────────────────────────
-UPLOAD_FOLDER = Path(__file__).parent / "temp_uploads"
-UPLOAD_FOLDER.mkdir(exist_ok=True)
+# Use /tmp on cloud (read-only root), or a local folder when running locally.
+_base = Path("/tmp") if os.environ.get("RENDER") else Path(__file__).parent
+UPLOAD_FOLDER = _base / "pdf_to_word_uploads"
+UPLOAD_FOLDER.mkdir(parents=True, exist_ok=True)
 
 ALLOWED_EXTENSIONS = {"pdf"}
-MAX_CONTENT_LENGTH = 50 * 1024 * 1024  # 50 MB limit
+
+# Free-tier Render has 512 MB RAM — keep individual files ≤ 15 MB.
+MAX_MB = int(os.environ.get("MAX_UPLOAD_MB", 15))
+MAX_CONTENT_LENGTH = MAX_MB * 1024 * 1024
 
 app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
 
@@ -33,12 +43,15 @@ def allowed_file(filename: str) -> bool:
 def cleanup_old_files(max_age_seconds: int = 600):
     """Delete temp files older than *max_age_seconds* (default 10 min)."""
     now = time.time()
-    for f in UPLOAD_FOLDER.iterdir():
-        if f.is_file() and (now - f.stat().st_mtime) > max_age_seconds:
-            f.unlink(missing_ok=True)
+    try:
+        for f in UPLOAD_FOLDER.iterdir():
+            if f.is_file() and (now - f.stat().st_mtime) > max_age_seconds:
+                f.unlink(missing_ok=True)
+    except Exception:
+        pass
 
 
-# Run cleanup every 5 minutes in a background thread
+# Background cleanup thread — runs every 5 minutes
 def _periodic_cleanup():
     while True:
         time.sleep(300)
@@ -46,6 +59,30 @@ def _periodic_cleanup():
 
 _cleanup_thread = threading.Thread(target=_periodic_cleanup, daemon=True)
 _cleanup_thread.start()
+
+
+# ── Subprocess conversion helper ───────────────────────────────────────────────
+# Running pdf2docx in a child process means its entire memory footprint
+# (PyMuPDF + OpenCV + NumPy) is freed when the child exits.  The parent
+# Gunicorn worker never allocates that memory at all.
+_CONVERTER_SCRIPT = Path(__file__).parent / "_convert_worker.py"
+
+
+def convert_in_subprocess(pdf_path: str, docx_path: str, timeout: int = 110) -> str | None:
+    """
+    Convert *pdf_path* → *docx_path* in a fresh subprocess.
+    Returns None on success, or an error string on failure.
+    """
+    result = subprocess.run(
+        [sys.executable, str(_CONVERTER_SCRIPT), pdf_path, docx_path],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    if result.returncode != 0:
+        stderr = result.stderr.strip() or "Unknown conversion error"
+        return stderr
+    return None
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
@@ -56,20 +93,20 @@ def index():
 
 @app.route("/convert", methods=["POST"])
 def convert_pdf():
-    """Accept a PDF upload, convert it to .docx, and return a download token."""
+    """Accept a PDF upload, convert it to .docx in a subprocess, return a token."""
 
     if "file" not in request.files:
         return jsonify({"error": "No file uploaded."}), 400
 
     file = request.files["file"]
 
-    if file.filename == "" or not file.filename:
+    if not file.filename:
         return jsonify({"error": "Empty filename."}), 400
 
     if not allowed_file(file.filename):
         return jsonify({"error": "Only PDF files are accepted."}), 400
 
-    # Save uploaded PDF with a unique name
+    # Build unique paths
     job_id = uuid.uuid4().hex[:12]
     original_stem = Path(secure_filename(file.filename)).stem or "document"
     pdf_path = UPLOAD_FOLDER / f"{job_id}_{original_stem}.pdf"
@@ -77,21 +114,22 @@ def convert_pdf():
 
     file.save(str(pdf_path))
 
+    # Convert in a subprocess — memory is freed when child exits
     try:
-        # Convert
-        cv = Converter(str(pdf_path))
-        cv.convert(str(docx_path), start=0, end=None)
-        cv.close()
-    except Exception as exc:
-        # Clean up on failure
+        error = convert_in_subprocess(str(pdf_path), str(docx_path))
+    except subprocess.TimeoutExpired:
         pdf_path.unlink(missing_ok=True)
+        return jsonify({"error": "Conversion timed out. Try a smaller file."}), 504
+    except Exception as exc:
+        pdf_path.unlink(missing_ok=True)
+        return jsonify({"error": f"Conversion error: {exc}"}), 500
+    finally:
+        pdf_path.unlink(missing_ok=True)   # Always remove source PDF
+
+    if error:
         docx_path.unlink(missing_ok=True)
-        return jsonify({"error": f"Conversion failed: {exc}"}), 500
+        return jsonify({"error": f"Conversion failed: {error}"}), 500
 
-    # Clean up PDF immediately; the docx will be cleaned by the periodic task
-    pdf_path.unlink(missing_ok=True)
-
-    # Return a token so the client can download via a direct browser navigation
     return jsonify({
         "token": job_id,
         "filename": f"{original_stem}.docx",
@@ -101,14 +139,11 @@ def convert_pdf():
 @app.route("/download/<token>/<filename>")
 def download_file(token, filename):
     """Serve the converted .docx file for direct browser download."""
-
-    # Find the matching file in the upload folder
     matches = list(UPLOAD_FOLDER.glob(f"{token}_*.docx"))
     if not matches:
         return jsonify({"error": "File not found or expired."}), 404
 
     docx_path = matches[0]
-
     return send_file(
         str(docx_path),
         as_attachment=True,
