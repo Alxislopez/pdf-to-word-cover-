@@ -55,8 +55,8 @@
       alert("Please select a valid PDF file.");
       return;
     }
-    if (file.size > 15 * 1024 * 1024) {
-      alert("File exceeds the 15 MB limit. Please use a smaller PDF.");
+    if (file.size > 50 * 1024 * 1024) {
+      alert("File exceeds the 50 MB limit.");
       return;
     }
     selectedFile = file;
