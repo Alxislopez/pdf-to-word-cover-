@@ -17,6 +17,7 @@ import os
 import sys
 import uuid
 import time
+import shutil
 import subprocess
 import threading
 from pathlib import Path
@@ -62,6 +63,9 @@ def convert_chunk(pdf_path: str, docx_path: str, start: int, end: int, timeout: 
     """
     Convert pages [start, end) of *pdf_path* into *docx_path* via a subprocess.
     Returns None on success, or an error string on failure.
+
+    We check BOTH the exit code AND that the output file actually exists —
+    pdf2docx can exit 0 while silently failing to write the output.
     """
     result = subprocess.run(
         [sys.executable, str(_WORKER), pdf_path, docx_path, str(start), str(end)],
@@ -70,7 +74,13 @@ def convert_chunk(pdf_path: str, docx_path: str, start: int, end: int, timeout: 
         timeout=timeout,
     )
     if result.returncode != 0:
-        return result.stderr.strip() or "Unknown conversion error"
+        return result.stderr.strip() or "Subprocess exited with non-zero code"
+
+    # Extra guard: verify the output file was actually written
+    if not Path(docx_path).exists():
+        stderr_hint = result.stderr.strip()
+        return f"Output file not created by worker. stderr: {stderr_hint or '(empty)'}"
+
     return None
 
 
@@ -80,8 +90,8 @@ def merge_docx_files(chunk_paths: list[Path], output_path: Path) -> None:
     docxcompose properly handles styles, images, and relationships across chunks.
     """
     if len(chunk_paths) == 1:
-        # Only one chunk — rename directly, no merge needed
-        chunk_paths[0].rename(output_path)
+        # Only one chunk — copy then delete (shutil.move is cross-filesystem safe)
+        shutil.move(str(chunk_paths[0]), str(output_path))
         return
 
     master = DocxDocument(str(chunk_paths[0]))
@@ -165,6 +175,8 @@ def convert_pdf():
 
     # ── Convert each chunk in its own subprocess ───────────────────────
     chunk_paths: list[Path] = []
+    conversion_error: Exception | None = None
+
     try:
         for i, (start, end) in enumerate(ranges):
             chunk_docx = UPLOAD_FOLDER / f"{job_id}_chunk{i:03d}.docx"
@@ -176,19 +188,23 @@ def convert_pdf():
             chunk_paths.append(chunk_docx)
 
     except subprocess.TimeoutExpired:
-        return jsonify({"error": "Conversion timed out. Try a smaller file."}), 504
+        conversion_error = Exception("Conversion timed out. Try a smaller file.")
 
     except Exception as exc:
-        return jsonify({"error": f"Conversion failed: {exc}"}), 500
+        conversion_error = exc
 
     finally:
-        # Always remove the source PDF immediately
+        # Always remove the source PDF — we no longer need it
         pdf_path.unlink(missing_ok=True)
 
-        # If something went wrong mid-way, clean up any chunks produced so far
-        if not final_docx.exists():
-            for cp in chunk_paths:
-                cp.unlink(missing_ok=True)
+    if conversion_error:
+        # Clean up any chunk files that were produced before the failure
+        for cp in chunk_paths:
+            cp.unlink(missing_ok=True)
+        msg = str(conversion_error)
+        if "timed out" in msg:
+            return jsonify({"error": msg}), 504
+        return jsonify({"error": f"Conversion failed: {msg}"}), 500
 
     # ── Merge chunks → final .docx ─────────────────────────────────────
     try:
